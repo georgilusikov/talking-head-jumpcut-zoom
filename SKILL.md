@@ -259,6 +259,8 @@ $$\text{Возврат взгляда в камеру (Eye-line)} > \text{Ест
   },
   "asr": {
     "engine": "whisper",
+    "model": "large-v3-turbo",
+    "vad": "silero",
     "fallback": "tts_alignment"
   },
   "audio": {
@@ -474,7 +476,7 @@ $$\text{Возврат взгляда в камеру (Eye-line)} > \text{Ест
 | Параметр / Гейт | Live Mobile Speaker | AI-Avatar Mode |
 |---|---|---|
 | **Главный триггер резов** | Возврат взгляда в камеру (`at_camera`) + паузы речи | Пики метрики артефактов генерации (Artifact score) |
-| **ASR & Таймкоды** | Whisper Word-Level ASR | TTS Phoneme Alignment (Whisper — fallback) |
+| **ASR & Таймкоды** | Whisper Word-Level ASR (`large-v3-turbo` + Silero VAD) | TTS Phoneme Alignment (Whisper `large-v3-turbo` — fallback) |
 | **Silence Trimming** | Активен ($\ge 300$ мс, 25 мс кроссфейды) | Отключен (речь изначально плотная) |
 | **Headroom Clamp** | $\min$ по всему сегменту ($hair\_top\_segment$) | Динамический по landmarks с защитой от дрейфа |
 | **Ограничения Плана 3** | `continuous_contact` $\ge 1.5s$, наклоны $\le 8^\circ$, руки вне зоны лица | Отсутствие дефектов аксессуаров/лица |
@@ -520,6 +522,8 @@ $$\text{Возврат взгляда в камеру (Eye-line)} > \text{Ест
   },
   "asr_reference": {
     "engine": "whisper",
+    "model": "large-v3-turbo",
+    "vad": "silero",
     "words": [{ "w": "...", "start_ms": 0, "end_ms": 240 }],
     "full_text": "..."
   },
