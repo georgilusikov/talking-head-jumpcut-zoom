@@ -592,11 +592,13 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 - [ ] **Blur gate:** на границе $\pm 3$ кадра резкость по Laplacian Variance выше пороговой (смазанные кадры смещают границу склейки).
 - [ ] **Vidstab check:** при наличии фонового дрейфа камеры (handheld) выполнен пре-пасс стабилизации до расчета кропов.
 - [ ] **Squint-gate (segment-wide) [v1.5.1]:** прикрытие/прищуривание глаз > 250 мс **внутри** сегмента плана 3 → даунгрейд сегмента до 1.08x (или split сегмента на sub-segments: pre-squint в план 3, squint-окно в 1.08x, post-squint обратно в план 3 если `continuous_contact` восстанавливается $\ge 1.5$ s). Причина в EDL: `reason: "squint_downgrade"`.
-- [ ] **Blink-boundary reinforcement [v1.5.1]:** blink-gate проверяет не только первый/последний кадр, но и окно $\pm 150$ мс от **каждой** границы сегмента. Полное закрытие глаз ($EAR < 0.20$) в этом окне → сдвиг стыка на ближайший кадр с открытыми глазами. Если сдвиг $> 300$ мс — warn `"blink_boundary_shift_large"`.
+- [ ] **Blink-boundary reinforcement [v1.5.1]:** blink-gate проверяет не только первый/последний кадр, но и окно $\pm 150$ мс от **каждой** границы сегмента. Полное закрытие глаз ($EAR < 0.20$) в этом окне → сдвиг стыка на ближайший кадр с открытыми глазами. Если сдвиг $> 300$ мс невозможен → downgrade transition до `reframe` или fallback на план 1.00x. Причина в EDL: `reason: "blink_boundary_shift"`.
+- [ ] **Micro-drift live fallback:** micro-drift (1.00→1.03) используется **исключительно** как fallback при невозможности безопасного hard cut при интервале $> 5$s. Запрещён как штатный эффект для live profile.
 
 ### Гейты синтетического аватара (AI-Avatar Gates)
-- [ ] **Cut-artifact alignment:** каждая склейка выставлена в окно $\pm 100$ мс от локального пика artifact-score.
-- [ ] **Forced cadence check:** принудительный каденс склеек строго **2.0–4.0 сек** (защита от зависаний без маскировки артефактов).
+- [ ] **Artifact-mask gate:** стыки планов привязаны к пикам метрики артефактов (локальные максимумы face-embedding $\Delta$, optical flow рук).
+- [ ] **Регенерация длинных дефектов:** артефакты $> 1.5$ сек изолированы для повторной генерации.
+- [ ] **Принудительный каденс 2.0–4.0 сек** (защита от зависаний без маскировки артефактов).
 - [ ] **Accessory & Hand integrity:** дефекты морфинга пальцев и аксессуаров изолированы планом $\le 1.00x$, подрезкой или отправлены на регенерацию ($>1.5s$).
 - [ ] **De-plastic FX check:** наложено зерно $\approx 0.05$, микро-дрифт 1.00→1.02.
 
@@ -1017,7 +1019,7 @@ Intensity всегда работает как **cap** на face-derived ideal (
 - **TR-15.** Критик v1.6: `GRADE_UNIFORMITY` (NO_GO), `NAMING` и `RETENTION` (warn + автофикс, post-GO housekeeping).
 - **TR-16.** Prop lifecycle: `prop_intervals` + `transition_windows` в analysis.json; hard cut запрещён внутри transition-окна.
 - **TR-17.** Music-bed detection: детект гармонической подложки → `audio.ambience.enabled=false`.
-- **TR-18.** Eye-closure gate: прикрытия глаз >250 ms — границы сегментов вне окон; >2 прикрытий на 2 s → plan ≤ 1.08.
+- **TR-18.** Eye-closure & Squint gate [включён в v1.5.1 для Live Speaker, §5]: segment-wide прикрытие/прищуривание >250 ms внутри плана 3 → даунгрейд до 1.08x; окно ±150 ms на всех границах сегментов.
 - **TR-19.** Retention proxy score: informational; гейтом становится после калибровки.
 
 ### v2 (Low)
