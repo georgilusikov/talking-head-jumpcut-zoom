@@ -131,6 +131,15 @@ analysis.json  →  timeline.json + edit_plan.md  →  master.mp4  →  critic_r
 
 Двухслойный QC: §5 дёшево ловит ошибки решений **до** рендера (pre-render), §§10–12 дорого но надёжно проверяет результат **после** рендера (post-render).
 
+### Разделение исполнения на 4 изолированных контура [v1.6 Architecture]
+
+Чтобы исключить execution gap (когда рендерер сам себя аттестует по манифесту), канон остаётся единым, а исполнение разделяется на 4 изолированных модуля:
+
+1. **`thz-probes` (CV-анализ):** facemesh/EAR, gaze, pose, blur, background patches, source_captions, pace_features $\to$ `analysis.json`.
+2. **`thz-orchestrator` (Режиссура):** акты, паттерны, хук, калибровка лестницы, starvation-лесенка $\to$ `timeline.json + edit_plan.md`.
+3. **`thz-render` (Рендерер):** ffmpeg filtergraph, source normalization, grade, loudness, mux $\to$ `master.mp4`.
+4. **`thz-critic` (Изолированный критик):** отдельная сессия/скрипт; на вход подаются **исключительно** `master.mp4 + analysis.json + asr_reference`. Манифест `timeline.json` используется только для формирования подсказок `fix_hints` при NO_GO, но **никогда для вынесения pass/fail**. Версия скрипта критика пиннуется в `critic_report.json#critic_version`.
+
 ### Source Normalization (обязательный пре-пасс)
 
 Перед анализом исходник приводится к стандартному виду. Все координаты (`hair_top`, `face_cx`, `bbox`, gesture-зоны) считаются **в координатах normalized/stabilized intermediate**, не исходного контейнера.
@@ -319,7 +328,7 @@ $$X_{crop} = \text{trunc}\left(\frac{W_{in} - W_{crop}}{2} + X_{shift}\right), \
 ### Драматургия взгляда (Eye-line Dramaturgy)
 1. **Границы hard cut:** точки разреза ставятся **строго при `at_camera`**. Отвод взгляда не должен оказываться на стыке планов.
 2. **Отвод взгляда = «Выдох»:** reframe-down до **1.00x** если отвод $\ge 1.0$s (фаза сброса или `--`).
-3. **Возврат взгляда + Тезис = Шаг «+»:** момент возврата взгляда в камеру, совпавший с ключевым словом, является идеальной естественной точкой reframe на **1.08x** или **1.16x**.
+33. **Возврат взгляда + Тезис = Шаг «+»:** момент возврата взгляда в камеру, совпавший с ключевым словом, является идеальной естественной точкой reframe на **1.08x** или **1.16x**.
 4. **План 3 (1.16x) — только на устойчивом контакте:** вход в крупный план разрешен исключительно при `continuous_contact` длительностью $\ge 1.5$ сек. Крупный план на «блуждающих» глазах запрещен.
 
 ### Приоритет точек склеек (для hard cut)
@@ -860,33 +869,42 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 }
 ```
 
-### Severity Map [v1.5]
+### Severity Map [v1.5, v1.6]
 
-| Check ID | Severity |
-|---|---|
-| ASR_DIFF | NO_GO |
-| HEADROOM | NO_GO |
-| CONTAINER | NO_GO |
-| ZOOM_RATIO | NO_GO (±1.5%, +drift tolerance if drift_mode=planned) |
-| RHYTHM | NO_GO |
-| LOUDNESS | NO_GO |
-| FX | warn |
-| CAPTIONS_SRT | warn (skip if subtitles.mode=off) |
-| SYNC | NO_GO |
-| COLORSPACE | NO_GO |
-| PLAN3_SHARE | NO_GO |
-| FACE_RATIO_P95 | warn |
-| FACE_RATIO_P5 | warn (wide_source) / NO_GO (normal) [v1.5 hotfix] |
-| RHYTHM_OVERFLOW | warn [v1.5 hotfix] |
-| STATIC_STRETCH | NO_GO [v1.5.1] |
-| SQUINT_DOWNGRADE | warn [v1.5.1] |
-| BLINK_BOUNDARY | warn [v1.5.1] |
-| POSTER_FRAME | warn + autofix [v1.5.2] |
-| RESIDUAL_DRIFT | warn (tripod) / NO_GO (handheld) [v1.5.1] |
-| PACE_CHECK | warn; NO_GO only if mismatch ≥ 2 categories |
-| GRADE_UNIFORMITY | NO_GO [v1.6] |
-| NAMING | warn + autofix [v1.6] |
-| RETENTION | warn + autofix [v1.6] |
+| Check ID | Что замеряет на мастере | Severity |
+|---|---|---|
+| ASR_DIFF | Стенограмма мастера vs asr_reference (0 потерь/замен) | NO_GO |
+| HEADROOM | $\min(hair\_top)$ по кадрам мастера $\ge 5\%$ (постер $\ge 10\%$) | NO_GO |
+| CONTAINER | 1080×1920, SAR 1:1, четные размеры, CFR, yuv420p | NO_GO |
+| ZOOM_RATIO | Scale по фоновым паттернам ($\pm 1.5\%$) | NO_GO |
+| RHYTHM | Фактические интервалы в пределах `rhythm_table[pace]` | NO_GO |
+| LOUDNESS | ebur128: $I = -14 \pm 0.5$ LUFS, $TP \le -1.0$ dBTP | NO_GO |
+| FX | Клиппинг светов $\le 2\%$, отсутствие артефактов грейда | warn |
+| CAPTIONS_SRT | Наличие и тайминги SRT (пропуск при `subtitles.mode=off`) | warn |
+| SYNC | Рассинхрон A/V $< 0.2$ кадра | NO_GO |
+| COLORSPACE | Rec.709 SDR без HDR-метаданных | NO_GO |
+| PLAN3_SHARE | Доля Плана 3 $\le plan3\_share\_cap$ ($\le 37.5\%$ wide) | NO_GO |
+| FACE_RATIO_P95 | 95-й перцентиль доли лица $\le 0.44$ | warn |
+| FACE_RATIO_P5 | 5-й перцентиль доли лица: wide $\to$ warn, normal $<0.30 \to$ NO_GO | warn / NO_GO |
+| RHYTHM_OVERFLOW | Интервалы $> hard.max$ имеют валидный reason в EDL | warn |
+| STATIC_STRETCH | Фактическая смена scale по фону (нет статики $> static\_cap$) | NO_GO |
+| SQUINT_EAR | Покадровый $EAR < 0.20$ внутри кадров Плана 3 $\to$ downgrade | NO_GO (plan 3) [v1.6] |
+| ANTI_FLICKER_ACTUAL | Фактический интервал между событиями $\ge rhythm\_table.anti\_flicker$ | NO_GO [v1.6] |
+| BLINK_BOUNDARY | Окно $\pm 150$ мс от стыка: глаза открыты ($EAR \ge 0.20$) | warn [v1.5.1] |
+| POSTER_FRAME | Кадр 0: headroom $\ge 10\%$, scale $\le 1.08$, blur кисти, viseme | warn + autofix [v1.5.2] |
+| ZOOM_PERCEPTIBILITY | $\Delta scale$ между соседними сегментами $\ge 6\%$ | warn [v1.6] |
+| SHARPNESS_MIN | Laplacian-пол по каждому сегменту (резкость не только на стыках) | warn [v1.6] |
+| CLICK_CHECK | Спектральный анализ стыков на аудио-клики/щелчки | warn [v1.6] |
+| X_CENTER_JITTER | Скачок $face\_cx$ между соседними сегментами $\le 1.5\% W$ | warn [v1.6] |
+| EXPOSURE_DRIFT | Межсегментная дельта средней яркости фона $\le 2\%$ | NO_GO [v1.6] |
+| LOOP_SIM | Cosine-similarity кадра 0 и финального кадра при snap_back | warn [v1.6] |
+| GESTURE_CROP | Движущаяся кисть руки не срезана границей кадра в план 2/3 | warn [v1.6] |
+| VISEME_EXTREME | Доля экстремально открытых висем в Плане 3 $\le 10\%$ | warn [v1.6] |
+| RESIDUAL_DRIFT | Дрейф фона между соседними сегментами $\le 2$ px | warn (tripod) / NO_GO (handheld) |
+| PACE_CHECK | Замер WPM мастера vs declared pace | warn; NO_GO при $\Delta \ge 2$ кат. |
+| GRADE_UNIFORMITY | $\Delta luma / \Delta chroma$ фоновых патчей между сегментами $\le 2\%$ | NO_GO [v1.6] |
+| NAMING | Соответствие шаблону именования | warn + autofix [v1.6] |
+| RETENTION | Retention proxy score (информационный) | info [v1.6] |
 
 > [!NOTE]
 > **[v1.6] TR-15.** `GRADE_UNIFORMITY` (Δluma/Δchroma фоновых патчей между сегментами ≤2% → NO_GO); `NAMING` и `RETENTION` (warn + автофикс, post-GO housekeeping).
@@ -1018,15 +1036,33 @@ Intensity всегда работает как **cap** на face-derived ideal (
 
 ## Приложение C. Фазы v1.6 и v2 (Roadmap)
 
-### v1.6 (Medium)
-- **TR-12.** Расширенная библиотека паттернов: `Punch`, `Wave`, `Sawtooth`, `Plateau`, `LadderDown`; правило «после ++ минимум один −»; feasibility по gaze/gesture-гейтам.
-- **TR-13.** Плановый «дыхательный» дрейф: monotonic-in 1.00→1.02 в сегментах >4 s при pace=calm или at_camera >80%; скорость ≤ 0.5%/s; критик ZOOM_RATIO допуск ±(drift+1.5%).
-- **TR-14.** Цветокор-look: `none|soft_warm|neutral_cool|natural`; порядок — после crop/scale в output-пространстве; highlight recovery глобально при клиппинге >2% где-либо.
-- **TR-15.** Критик v1.6: `GRADE_UNIFORMITY` (NO_GO), `NAMING` и `RETENTION` (warn + автофикс, post-GO housekeeping).
-- **TR-16.** Prop lifecycle: `prop_intervals` + `transition_windows` в analysis.json; hard cut запрещён внутри transition-окна.
-- **TR-17.** Music-bed detection: детект гармонической подложки → `audio.ambience.enabled=false`.
-- **TR-18.** Eye-closure & Squint gate [включён в v1.5.1 для Live Speaker, §5]: segment-wide прикрытие/прищуривание >250 ms внутри плана 3 → даунгрейд до 1.08x; окно ±150 ms на всех границах сегментов.
-- **TR-19.** Retention proxy score: informational; гейтом становится после калибровки.
+### v1.6 (Инструментальная независимость и QC)
+- **Архитектура 4 изолированных модулей:** разделение исполнения на `thz-probes` (CV-анализ) $\to$ `thz-orchestrator` (режиссура) $\to$ `thz-render` (FFmpeg) $\to$ `thz-critic` (изолированный критик). Критик работает в отдельной сессии/скрипте, получает только `master.mp4 + analysis.json + asr_reference`, исключая самоаттестацию по манифесту.
+- **Инструментальный QC-пакет по мастеру:**
+  - `POSTER_FRAME` (кадр 0: headroom $\ge 10\%$, blur кисти, scale $\le 1.08$, viseme);
+  - `STATIC_STRETCH` (фактические интервалы смены scale по фону);
+  - `SQUINT_EAR` (покадровый $EAR < 0.20$ в плане 3 $\to$ downgrade);
+  - `ANTI_FLICKER_ACTUAL` (фактические интервалы событий $\ge rhythm\_table.anti\_flicker$, ловит кейсы $<1.8$ s);
+  - `ZOOM_PERCEPTIBILITY` ($\Delta scale \ge 6\%$);
+  - `SHARPNESS_MIN` (Laplacian-пол внутри каждого сегмента);
+  - `CLICK_CHECK` (спектральные клики на стыках аудио);
+  - `X_CENTER_JITTER` (скачок $face\_cx \le 1.5\% W$);
+  - `EXPOSURE_DRIFT` (межсегментная дельта средней яркости фона $\le 2\%$);
+  - `LOOP_SIM` (cosine-similarity первого/последнего кадра);
+  - `GESTURE_CROP` (кисть руки не срезана в план 2/3);
+  - `VISEME_EXTREME` (доля экстремальных висем в плане 3 $\le 10\%$).
+- **Процессные гейты:**
+  - Пиннинг версии critic-скрипта в `critic_report.json#critic_version`;
+  - Фиксация регрессионных бейзлайнов по веткам (`live-neutral-wide`, `close-face`, `ai-avatar`, `burned-captions`, `handheld`);
+  - Автоматический прогон правок скилла против базлайнов.
+- **TR-12.** Расширенная библиотека паттернов: `Punch`, `Wave`, `Sawtooth`, `Plateau`, `LadderDown`; правило «после ++ минимум один −».
+- **TR-13.** Плановый «дыхательный» дрейф: monotonic-in 1.00→1.02 в сегментах >4 s при pace=calm или at_camera >80%; скорость ≤ 0.5%/s.
+- **TR-14.** Цветокор-look: `none|soft_warm|neutral_cool|natural`.
+- **TR-15.** `GRADE_UNIFORMITY` (NO_GO), `NAMING` и `RETENTION` (warn + автофикс).
+- **TR-16.** Prop lifecycle: `prop_intervals` + `transition_windows` в analysis.json.
+- **TR-17.** Music-bed detection $\to$ `audio.ambience.enabled=false`.
+- **TR-18.** Eye-closure & Squint gate [включён в v1.5.1 для Live Speaker, §5].
+- **TR-19.** Retention proxy score: informational.
 
 ### v2 (Low)
 - **TR-20.** Авто-салиентность (повторы, числительные, контрасты) + `prosody_peak` (pitch/energy) в cut_candidates.
