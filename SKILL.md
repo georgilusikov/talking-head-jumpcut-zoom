@@ -3,7 +3,7 @@ name: talking-head-jumpcut-zoom
 description: 'Автомонтаж вертикальных talking-head видео (9:16, Shorts, Reels, TikTok): startup intake → source normalization → адаптивные профили для живых мобильных спикеров (Live Mobile Speaker: eye-line драматургия, hard/reframe семантика, head-pose/gesture/blur гейты, segment-wide headroom, resolution-aware scale cap, micro-drift fallback) и синтетических аватаров (AI-Avatar: склейки по артефактам, region-crop псевдо B-roll, де-пластик фильтры); segments-first timeline.json, trust-but-verify QC (pre-render gates + post-render critic), SRT/word-JSON export для внешних субтитров, рендер через ffmpeg. Triggers: "смонтируй говорящую голову", "talking head zoom", "сделай зумы как в рилс", "подрежь паузы и расставь зумы", "автомонтаж shorts", "ai avatar", "heygen/synthesia монтаж", "смонтируй синтетического спикера", "монтаж живого спикера", "eye-line zoom", "динамичный спикер".'
 ---
 
-# Talking-Head Jumpcut & Zoom Editor v1.6.1
+# Talking-Head Jumpcut & Zoom Editor v1.6.2
 
 Единый профессиональный стандарт и модуль автомонтажа вертикальных экспертных роликов (9:16) в стиле динамичного удержания внимания (talking head retention edit). Модуль содержит **два специализированных профиля**:
 1. **Live Mobile Speaker** — для живых, динамичных спикеров с активной мимикой, жестикуляцией, наклонами головы и отводами взгляда.
@@ -170,6 +170,7 @@ $$scale = \min(\text{scale\_target}, scale\_cap, scale\_for\_face\_target)$$
 
 Вместо фиксированной лестницы — предиктивный подбор на основе `face_base` (медиана `face_h / H_out` при scale 1.00 на normalized intermediate):
 
+```
 face_base = median(face_h / H_out) при scale 1.00
 lower     = min(1.10, 0.44 / face_base)
 top_ideal = clamp(0.40 / face_base, lower, scale_cap)
@@ -178,6 +179,7 @@ step2     = ladder_step2[intensity] если top == ladder_top,
             иначе round(1 + (top − 1) · 0.55, 0.02)
 ladder_final = [1.00, min(step2, top), top]
 scale = min(scale_target, scale_cap, scale_for_face_target)  # формула v1.4 сохраняется
+```
 
 Базовые лестницы по intensity:
 | intensity | ladder | top |
@@ -231,8 +233,27 @@ Intensity из профиля работает как **cap** на face-derived 
   - Компенсация: semantic keywords, увеличенный plan3_share_cap (0.375), допущены 2 плана 3 подряд
   - Рекомендация пользователю: перейти на ближнюю точку съёмки или использовать dynamic intensity
 
+### Баланс планов и возврат в базу (Plan Balance & Home Return) [v1.6.2]
+
+Широкий план (1.00x) — это **«дом» и базовый якорь восприятия**, а не временный резерв. Без возврата в 1.00x драматургическая дуга «++--» деградирует в ощущение постоянной тесноты.
+
+1. **`PLAN_BALANCE` Guard:**
+   - `plan1_share ≥ 0.35` (доля базового плана 1.00x обязана составлять не менее 35% общего хронометража);
+   - `plan2_share ≤ 0.45` (доля среднего плана / аргумента 1.08x–1.33x не должна превышать 45%);
+   - `plan3_share ≤ plan3_share_cap` (доля кульминаций в пределах лимита профиля).
+
+2. **`HOME_RETURN` Rule:**
+   - После $\ge 2$ подряд сегментов с масштабом $\ne 1.00x$ суммарной длительностью $> 8.0$ s — **обязателен возврат в базовый масштаб 1.00x минимум на $\ge 2.5$ s** (кроме финального блока Акта 4 с кульминационным панчлайном).
+   - Запрещено удерживать средние/крупные планы (1.08x, 1.33x) дольше 8 секунд без широкого «выдоха».
+
+3. **`OUTRO_BREATH` Rule:**
+   - При `snap_back: false` (или финале на кульминационном зуме) последний контекстный сброс в 1.00x перед финальной кульминацией обязан быть **$\ge 3.0$ s**, чтобы подготовить восприятие зрителя к финальному акценту.
+
+4. **`STATIC_STRETCH` (План-независимо и по фону):**
+   - Удержание **любого** масштаба (1.00x, 1.08x, 1.33x, 1.60x) подряд $> rhythm\_table[pace].static\_cap$ (5.0 s для neutral) — **запрещено** (NO_GO).
+   - Hard-cut без смены масштаба (no-op) таймер статики **не сбрасывает**. Замер производится по фактическому оптическому потоку/паттернам фона.
+
 ### Центр кропа и динамический X-центр
-Центр кропа по умолчанию центрирован, но при горизонтальном смещении спикера активируется **Dynamic X-center Clamp**:
 $$X_{shift} = \text{clamp}(face\_cx - W_{in}/2, -0.04 \cdot W_{in}, 0.04 \cdot W_{in})$$
 $$X_{crop} = \text{trunc}\left(\frac{W_{in} - W_{crop}}{2} + X_{shift}\right), \quad Y_{crop} = (H_{in} - H_{crop}) \cdot anchor\_y$$
 
@@ -572,7 +593,10 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
   - Если `wide_source == true` и p5 < 0.30 → warn `"wide_source: climax reads as medium shot"` (scale-defined mode, допустимо с компенсацией keywords).
   - Если `wide_source == false` и p5 < 0.30 → NO_GO `"plan 3 not close-up per framing targets"`.
 - [ ] **RHYTHM_OVERFLOW [v1.5 hotfix]:** интервалы > `rhythm_table[pace].hard` верхней границы должны иметь `reason` в EDL (допустимые: `eye_overflow`, `gesture_hold`). Без `reason` → warn.
-- [ ] **STATIC_STRETCH [v1.5.1] (NO_GO):** ни один сегмент без смены scale не длится дольше `rhythm_table[pace].static_cap` (neutral: 5.0 s). При отсутствии безопасной точки склейки — **starvation-лесенка**:
+- [ ] **PLAN_BALANCE [v1.6.2] (NO_GO):** `plan1_share >= 0.35` (базовый план 1.00x — «дом»), `plan2_share <= 0.45` (средний план не вытесняет базу), `plan3_share <= plan3_share_cap`.
+- [ ] **HOME_RETURN [v1.6.2] (NO_GO):** после $\ge 2$ подряд сегментов $\ne 1.00x$ суммарно $> 8.0$ s — обязателен возврат в 1.00x минимум на $\ge 2.5$ s (кроме финального панчлайна).
+- [ ] **OUTRO_BREATH [v1.6.2] (NO_GO):** при `snap_back: false` последний контекстный сброс в 1.00x перед финальной кульминацией $\ge 3.0$ s.
+- [ ] **STATIC_STRETCH [v1.5.1, v1.6.2] (NO_GO):** ни один непрерывный отрезок на **любом** масштабе (1.00x, 1.08x, 1.33x, 1.60x) не длится дольше `rhythm_table[pace].static_cap` (neutral: 5.0 s). Hard-cut без смены масштаба (no-op) таймер статики не сбрасывает. При отсутствии безопасной точки склейки — **starvation-лесенка**:
   - R1: reframe при $|yaw| \le 12°$ (без hard cut);
   - R2: blink-margin ослаблен до $\pm 100$ мс;
   - R3: cut при жесте в нижней зоне кадра;
@@ -869,6 +893,9 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 | SYNC | Рассинхрон A/V $< 0.2$ кадра | NO_GO |
 | COLORSPACE | Rec.709 SDR без HDR-метаданных | NO_GO |
 | PLAN3_SHARE | Доля Плана 3 $\le plan3\_share\_cap$ ($\le 37.5\%$ wide) | NO_GO |
+| PLAN_BALANCE | `plan1_share >= 0.35` (дом), `plan2_share <= 0.45` | NO_GO [v1.6.2] |
+| HOME_RETURN | Обязательный возврат в 1.00x $\ge 2.5$s после $>8$s зумов | NO_GO [v1.6.2] |
+| OUTRO_BREATH | Контекстный сброс в 1.00x $\ge 3.0$s перед финалом | NO_GO [v1.6.2] |
 | FACE_RATIO_P95 | 95-й перцентиль доли лица $\le 0.44$ | warn |
 | FACE_RATIO_P5 | 5-й перцентиль доли лица: wide $\to$ warn, normal $<0.30 \to$ NO_GO | warn / NO_GO |
 | RHYTHM_OVERFLOW | Интервалы $> hard.max$ имеют валидный reason в EDL | warn |
