@@ -49,6 +49,18 @@ description: 'Автомонтаж вертикальных talking-head вид�
 
 **Правило валидации [v1.5]:** если `pace=calm` + `intensity=dynamic` → генерируется warning, происходит auto-resolve `intensity` → `moderate`, изменение логируется в `project_config.json#overrides_log`.
 
+Формат `overrides_log`:
+```json
+[
+  {
+    "timestamp": "2026-01-15T14:32:00Z",
+    "conflict": "pace=calm + intensity=dynamic",
+    "resolution": "intensity → moderate",
+    "reason": "incompatible combination"
+  }
+]
+```
+
 > [!NOTE]
 > `subtitles.mode == export_only` → рендер **без** вжигаемых субтитров; скилл отдаёт SRT + word-level JSON с таймкодами **out-мс** (§4) и резервирует `subtitle_safe_zone`; критик проверяет целостность SRT, а не вжигание в кадр.
 > При `subtitles.mode == off` → word-level ASR остаётся внутренним (нужен для ASR-diff §10); внешние SRT/JSON не генерируются; `subtitle_safe_zone` всё ещё резервируется.
@@ -96,6 +108,12 @@ graph TD
     V3 -->|"NO_GO, ≤ 2 итераций"| G
     V3 -->|GO| DONE[Accepted Master]
 ```
+
+### Версионирование рендеров [v1.5]
+
+Рендер → `master.mp4` (итерации NO_GO: `master_iter1.mp4`, `master_iter2.mp4`).
+После GO: `master.mp4` переименовывается по `output.naming_pattern` (напр. `20260831_silencio_v01_1080x1920.mp4`); `ver` автоинкрементируется для каждого публичного артефакта.
+При `output.artifacts_retention == "minimal"`: после GO удаляются normalized/stabilized intermediate, контакт-листы, `master_iterN.mp4`; **всегда остаются**: `timeline.json`, `edit_plan.md`, `critic_report.json`, `analysis.json`, `transcript_side_by_side.txt`.
 
 - **Live Profile:** триггеры склеек и масштабов опираются на **Eye-line классификатор** (`at_camera` / `away`), естественные речевые паузы, фильтрацию смазанных кадров (`blur gate`) и углов наклона головы (`head-pose gate`).
 - **AI-Avatar Profile:** таймкоды извлекаются из **TTS phoneme alignment**, точки склеек выставляются на пики **Artifact scoring** (face-embedding $\Delta$, optical flow рук), применяется анти-пластик постобработка.
@@ -324,6 +342,9 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 - `zooms` остаются как производный render-helper с `out_ms`.
 - Новые блоки: `source_normalization`, `captions`, `micro_drift`.
 - `subtitle_safe_zone` помечен как *informational for downstream*.
+
+> [!NOTE]
+> Пример ниже упрощён для читаемости и показывает формат v1.4. Новые поля v1.5 (`profile`, `pace`, `rhythm_table`, `zoom.intensity`, `zoom.ladder`, `zoom.face_base`, `source_captions`, `hook`, `semantic`, `plan3_share`) и сегментное поле `hook_type` опциональны и добавляются при использовании соответствующих фич.
 
 ```json
 {
@@ -792,7 +813,7 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 
 > [!NOTE]
 > **[v1.6] TR-15.** `GRADE_UNIFORMITY` (Δluma/Δchroma фоновых патчей между сегментами ≤2% → NO_GO); `NAMING` и `RETENTION` (warn + автофикс, post-GO housekeeping).
-> **[v1.6] TR-19.** Retention proxy score: `retention_score = 0.25·hook + 0.30·event_density(rhythm_table) + 0.20·semantic_alignment + 0.15·plan3_distribution + 0.10·loop`. Informational; гейтом становится в v2 после калибровки.
+> **[v1.6] TR-19.** Retention proxy score: `retention_score = 0.25·hook + 0.30·event_density(rhythm_table) + 0.20·semantic_alignment + 0.15·plan3_distribution + 0.10·loop`. Informational; гейтом становится в v2 после калибровки. Добавляется в `critic_report.json` как informational поле после GO.
 
 4. **Цикл исправлений:** NO_GO → авто-фикс timeline по `fix_hints` → повторный рендер → повторный критик; **максимум 2 итерации**, далее эскалация человеку.
 
@@ -882,7 +903,31 @@ Skill-1 принимает `clean_source.mp4` как `source`; при налич
 
 ## Приложение A. Полная схема `project_config.json` v1.5
 
-(Already included in §0 — reference only.)
+```json
+{
+  "source_type": "auto|live|ai_avatar",
+  "profile": "premium-calm|neutral|dynamic|custom",
+  "content": { "pace": "auto|calm|neutral|high" },
+  "zoom": { "intensity": "auto|calm|moderate|dynamic" },
+  "subtitles": { "mode": "off|export_only", "format": "srt|srt_and_json", "external_tool": "capcut" },
+  "source_captions": "auto|none|burned_keep|burned_remove",
+  "semantic": { "keywords": [] },
+  "grade": { "look": "none|soft_warm|neutral_cool|natural", "vignette": false },
+  "speech_cleanup": { "mode": "strict" },
+  "approval": { "edit_plan": "auto" },
+  "loop_preference": "auto",
+  "language": "ru",
+  "output": { "naming_pattern": "{date}_{slug}_v{ver}_{res}", "artifacts_retention": "minimal|full" },
+  "overrides_log": [
+    {
+      "timestamp": "2026-01-15T14:32:00Z",
+      "conflict": "pace=calm + intensity=dynamic",
+      "resolution": "intensity → moderate",
+      "reason": "incompatible combination"
+    }
+  ]
+}
+```
 
 ## Приложение B. Пресеты профилей [v1.5]
 
