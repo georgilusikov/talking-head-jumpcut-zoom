@@ -208,6 +208,36 @@ Intensity из профиля работает как **cap** на face-derived 
 - face_base=0.30 + moderate → `[1.00, 1.08, 1.16]`, plan3 face ≈ 0.35 ≤ 0.44 ✓
 - face_base=0.38 + moderate → `[1.00, 1.06, 1.10]`, face ≈ 0.42 ≤ 0.44 ✓
 
+### Wide Source Detection [v1.5 hotfix]
+
+Предиктивная калибровка ограничивает только **верх** (face > 0.44 → понижает scale). При мелком лице в кадре (поясной план, 4K, дальняя точка съёмки) план 3 может формально пройти верхний cap, но **не читаться как крупный план по восприятию**. Необходима симметричная проверка **нижней** границы.
+
+Если `face_base < 0.26` (ниже нижней границы плана 1):
+1. Пометить `wide_source = true` в `analysis.json`.
+2. `intensity_floor = dynamic` — попытка дотянуть кульминацию до максимально возможного scale.
+3. Пересчитать лестницу с учётом `scale_cap`:
+   ```
+   top_wide    = min(scale_cap, 0.34 / face_base)   # целевая нижняя граница плана 2
+   step2_wide  = round(1 + (top_wide − 1) · 0.55, 0.02)
+   ladder_final = [1.00, min(step2_wide, top_wide), top_wide]
+   ```
+4. Если даже при `scale_cap` план 3 даёт `face_ratio < 0.30`:
+   - Фрейминг-цели плана 3 становятся **scale-defined**, не face-defined (план 3 — это максимальный доступный scale, а не гарантированный крупный план).
+   - Добавить `warn` в `critic_report.json`: `"wide_source_climax_weak"`.
+   - Увеличить `plan3_share_cap` на 50% (напр. moderate 0.25 → 0.375).
+   - Разрешить 2 плана 3 подряд (обычное правило «два подряд запрещены» снимается).
+   - В `edit_plan.md` помечать: `[wide_source] climax plan ~{face_ratio:.2f} face_ratio, compensated by keyword "{word}"`.
+
+Пример wide_source [v1.5 hotfix]:
+- face_base=0.160 (4K поясной план) + moderate:
+  - `wide_source = true`
+  - `top_wide = min(1.60, 0.34 / 0.160) = min(1.60, 2.125) = 1.60` → но intensity moderate cap = 1.16
+  - `ladder_final = [1.00, 1.08, 1.16]`, plan3 face_ratio ≈ 0.185
+  - face_ratio 0.185 < 0.30 → scale-defined mode
+  - Критик: warn `"wide_source_climax_weak"`
+  - Компенсация: semantic keywords, увеличенный plan3_share_cap (0.375), допущены 2 плана 3 подряд
+  - Рекомендация пользователю: перейти на ближнюю точку съёмки или использовать dynamic intensity
+
 ### Центр кропа и динамический X-центр
 Центр кропа по умолчанию центрирован, но при горизонтальном смещении спикера активируется **Dynamic X-center Clamp**:
 $$X_{shift} = \text{clamp}(face\_cx - W_{in}/2, -0.04 \cdot W_{in}, 0.04 \cdot W_{in})$$
@@ -318,6 +348,15 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 
 > [!NOTE]
 > **[v1.6] TR-12.** Расширенная библиотека паттернов: `Punch`, `Wave`, `Sawtooth (++-+--)`, `Plateau (+ = + − −)`, `LadderDown`; правило «после ++ минимум один −»; feasibility по gaze/gesture-гейтам; calm preferred = [Punch, Wave]. Паттерн акта — в EDL.
+
+### Wide Source Adaptation [v1.5 hotfix]
+
+При `wide_source == true` (face_base < 0.26):
+- План 3 воспринимается как «средний крупный» (medium close-up), а не «экстремальный крупный». Агент **не должен** описывать его в EDL как «крупный портрет» — использовать `[wide_source] climax plan`.
+- Акценты на планах 3 должны **компенсироваться семантическими триггерами** (keywords, prosody), чтобы зритель чувствовал кульминацию не только по крупности.
+- Разрешено **2 плана 3 подряд** (обычное правило «два подряд запрещены» снимается).
+- `plan3_share_cap` увеличивается на 50% от базового.
+- В `edit_plan.md` каждый план 3 помечается: `[wide_source] climax plan ~{face_ratio:.2f} face_ratio, compensated by keyword "{word}"`.
 
 ### Hook-selector акта 1 [v1.5]
 
@@ -524,6 +563,10 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 - [ ] **PLAN3_SHARE [v1.5]:** доля плана 3 в хронометраже $\le$ `plan3_share_cap[intensity]` (NO_GO при превышении).
 - [ ] **FACE_RATIO_P95 [v1.5]:** 95-й перцентиль `face_h_out_ratio` не превышает 0.44 для план 3 (warn).
 - [ ] **PACE_CHECK [v1.5]:** критик самостоятельно замеряет WPM и плотность событий из аудио мастера и сверяет с declared pace; warn; NO_GO только при расхождении на 2 категории (напр. declared calm & WPM $\ge 180$).
+- [ ] **FACE_RATIO_P5 [v1.5 hotfix]:** 5-й перцентиль `face_h_out_ratio` для сегментов плана 3:
+  - Если `wide_source == true` и p5 < 0.30 → warn `"wide_source: climax reads as medium shot"` (scale-defined mode, допустимо с компенсацией keywords).
+  - Если `wide_source == false` и p5 < 0.30 → NO_GO `"plan 3 not close-up per framing targets"`.
+- [ ] **RHYTHM_OVERFLOW [v1.5 hotfix]:** интервалы > `rhythm_table[pace].hard` верхней границы должны иметь `reason` в EDL (допустимые: `eye_overflow`, `gesture_hold`). Без `reason` → warn.
 
 ### Гейты живого мобильного спикера (Live Mobile Speaker Gates)
 - [ ] **Eye-line gate:** границы hard cut строго при `at_camera`; склейка не попадает на момент отвода взгляда; крупный план (1.16x) назначен только на отрезок с `continuous_contact` $\ge 1.5$ сек.
@@ -806,6 +849,8 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 | COLORSPACE | NO_GO |
 | PLAN3_SHARE | NO_GO |
 | FACE_RATIO_P95 | warn |
+| FACE_RATIO_P5 | warn (wide_source) / NO_GO (normal) [v1.5 hotfix] |
+| RHYTHM_OVERFLOW | warn [v1.5 hotfix] |
 | PACE_CHECK | warn; NO_GO only if mismatch ≥ 2 categories |
 | GRADE_UNIFORMITY | NO_GO [v1.6] |
 | NAMING | warn + autofix [v1.6] |
