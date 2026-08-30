@@ -170,7 +170,6 @@ $$scale = \min(\text{scale\_target}, scale\_cap, scale\_for\_face\_target)$$
 
 Вместо фиксированной лестницы — предиктивный подбор на основе `face_base` (медиана `face_h / H_out` при scale 1.00 на normalized intermediate):
 
-```
 face_base = median(face_h / H_out) при scale 1.00
 lower     = min(1.10, 0.44 / face_base)
 top_ideal = clamp(0.40 / face_base, lower, scale_cap)
@@ -179,7 +178,6 @@ step2     = ladder_step2[intensity] если top == ladder_top,
             иначе round(1 + (top − 1) · 0.55, 0.02)
 ladder_final = [1.00, min(step2, top), top]
 scale = min(scale_target, scale_cap, scale_for_face_target)  # формула v1.4 сохраняется
-```
 
 Базовые лестницы по intensity:
 | intensity | ladder | top |
@@ -593,8 +591,8 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
   - Если `wide_source == true` и p5 < 0.30 → warn `"wide_source: climax reads as medium shot"` (scale-defined mode, допустимо с компенсацией keywords).
   - Если `wide_source == false` и p5 < 0.30 → NO_GO `"plan 3 not close-up per framing targets"`.
 - [ ] **RHYTHM_OVERFLOW [v1.5 hotfix]:** интервалы > `rhythm_table[pace].hard` верхней границы должны иметь `reason` в EDL (допустимые: `eye_overflow`, `gesture_hold`). Без `reason` → warn.
-- [ ] **PLAN_BALANCE [v1.6.2] (NO_GO):** `plan1_share >= 0.35` (базовый план 1.00x — «дом»), `plan2_share <= 0.45` (средний план не вытесняет базу), `plan3_share <= plan3_share_cap`.
-- [ ] **HOME_RETURN [v1.6.2] (NO_GO):** после $\ge 2$ подряд сегментов $\ne 1.00x$ суммарно $> 8.0$ s — обязателен возврат в 1.00x минимум на $\ge 2.5$ s (кроме финального панчлайна).
+- [ ] **PLAN_BALANCE [v1.6.2] (NO_GO):** `plan1_share >= 0.35` (базовый план 1.00x — «дом»), `plan2_share <= 0.45` (средний план не вытесняет базовый).
+- [ ] **HOME_RETURN [v1.6.2] (NO_GO):** после $\ge 2$ подряд сегментов $\ne 1.00x$ суммарной длиной $> 8.0$ s — обязательный возврат в 1.00x на $\ge 2.5$ s (кроме кульминационного блока Акта 4).
 - [ ] **OUTRO_BREATH [v1.6.2] (NO_GO):** при `snap_back: false` последний контекстный сброс в 1.00x перед финальной кульминацией $\ge 3.0$ s.
 - [ ] **STATIC_STRETCH [v1.5.1, v1.6.2] (NO_GO):** ни один непрерывный отрезок на **любом** масштабе (1.00x, 1.08x, 1.33x, 1.60x) не длится дольше `rhythm_table[pace].static_cap` (neutral: 5.0 s). Hard-cut без смены масштаба (no-op) таймер статики не сбрасывает. При отсутствии безопасной точки склейки — **starvation-лесенка**:
   - R1: reframe при $|yaw| \le 12°$ (без hard cut);
@@ -1013,6 +1011,20 @@ Skill-2 (`multimodal-video-retakes-editor`) отвечает за отбор л�
 Skill-1 принимает `clean_source.mp4` как `source`; при наличии `takes_report.json` → `speech_cleanup` принудительно `strict` (дубли уже удалены).
 
 Удаление причмокиваний, филлеров и дублей — ответственность skill-2, не skill-1.
+
+## 15. Контракт skill-3 (talking-head-director-review) [v1.6.2]
+
+Skill-3 (`talking-head-director-review`) — независимый режиссёр-зритель, оценивающий **качество монтажных решений** (перцептивная драматургия, хук, воздух, финал), дополняя инструментальный контролёр соблюдения спеки (`thz_critic.py`).
+
+| Артефакт | Обязательный | Описание |
+|---|---|---|
+| `director_report.json` | Да (на GO-кандидате) | Отчёт по 7 осям (шкала 0–10), overall_score, вердикт (`accepted`/`minor`/`critical`), fix_hints |
+
+**Матрица арбитража:**
+- Механический QC **NO_GO** $\to$ безусловный фикс спеки;
+- Механический QC **GO** + Режиссёр **`critical`** (любая ось $\le 4$ или overall $< 5.0$) $\to$ **GO reopening** (фикс по `fix_hints` $\le 1$ итерация либо эскалация человеку);
+- Механический QC **GO** + Режиссёр **`minor`** $\to$ фиксация в baselines, не блокирует;
+- Механический QC **GO** + Режиссёр **`accepted`** (все оси $\ge 7$, overall $\ge 7.5$) $\to$ **ACCEPTED Master**.
 
 ---
 
