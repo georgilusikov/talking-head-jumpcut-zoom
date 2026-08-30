@@ -3,7 +3,7 @@ name: talking-head-jumpcut-zoom
 description: 'Автомонтаж вертикальных talking-head видео (9:16, Shorts, Reels, TikTok): startup intake → source normalization → адаптивные профили для живых мобильных спикеров (Live Mobile Speaker: eye-line драматургия, hard/reframe семантика, head-pose/gesture/blur гейты, segment-wide headroom, resolution-aware scale cap, micro-drift fallback) и синтетических аватаров (AI-Avatar: склейки по артефактам, region-crop псевдо B-roll, де-пластик фильтры); segments-first timeline.json, trust-but-verify QC (pre-render gates + post-render critic), SRT/word-JSON export для внешних субтитров, рендер через ffmpeg. Triggers: "смонтируй говорящую голову", "talking head zoom", "сделай зумы как в рилс", "подрежь паузы и расставь зумы", "автомонтаж shorts", "ai avatar", "heygen/synthesia монтаж", "смонтируй синтетического спикера", "монтаж живого спикера", "eye-line zoom", "динамичный спикер".'
 ---
 
-# Talking-Head Jumpcut & Zoom Editor v1.5
+# Talking-Head Jumpcut & Zoom Editor v1.5.1
 
 Единый профессиональный стандарт и модуль автомонтажа вертикальных экспертных роликов (9:16) в стиле динамичного удержания внимания (talking head retention edit). Модуль содержит **два специализированных профиля**:
 1. **Live Mobile Speaker** — для живых, динамичных спикеров с активной мимикой, жестикуляцией, наклонами головы и отводами взгляда.
@@ -177,6 +177,7 @@ $$scale = \min(\text{scale\_target}, scale\_cap, scale\_for\_face\_target)$$
 
 Вместо фиксированной лестницы — предиктивный подбор на основе `face_base` (медиана `face_h / H_out` при scale 1.00 на normalized intermediate):
 
+```
 face_base = median(face_h / H_out) при scale 1.00
 lower     = min(1.10, 0.44 / face_base)
 top_ideal = clamp(0.40 / face_base, lower, scale_cap)
@@ -185,6 +186,7 @@ step2     = ladder_step2[intensity] если top == ladder_top,
             иначе round(1 + (top − 1) · 0.55, 0.02)
 ladder_final = [1.00, min(step2, top), top]
 scale = min(scale_target, scale_cap, scale_for_face_target)  # формула v1.4 сохраняется
+```
 
 Базовые лестницы по intensity:
 | intensity | ladder | top |
@@ -357,6 +359,14 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 - Разрешено **2 плана 3 подряд** (обычное правило «два подряд запрещены» снимается).
 - `plan3_share_cap` увеличивается на 50% от базового.
 - В `edit_plan.md` каждый план 3 помечается: `[wide_source] climax plan ~{face_ratio:.2f} face_ratio, compensated by keyword "{word}"`.
+
+### Long-form Acts [v1.5.1]
+
+При длительности ролика $> 60$ s:
+- Акты длятся **20–25 s** (а не 15–20 s), чтобы паттерны имели пространство для развития.
+- Минимум визуальных событий на акт: $\lceil dur_{act} / hard_{mid} \rceil$ (neutral: $hard_{mid} = 3.35$ → при 22 s акте = 7 событий).
+- План 3 распределяется по $\ge 2$ актам из 4-х — запрещена концентрация всех кульминаций в одном акте.
+- Оркестратор timeline-генератора проверяет баланс после построения и перераспределяет при нарушении.
 
 ### Hook-selector акта 1 [v1.5]
 
@@ -567,6 +577,13 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
   - Если `wide_source == true` и p5 < 0.30 → warn `"wide_source: climax reads as medium shot"` (scale-defined mode, допустимо с компенсацией keywords).
   - Если `wide_source == false` и p5 < 0.30 → NO_GO `"plan 3 not close-up per framing targets"`.
 - [ ] **RHYTHM_OVERFLOW [v1.5 hotfix]:** интервалы > `rhythm_table[pace].hard` верхней границы должны иметь `reason` в EDL (допустимые: `eye_overflow`, `gesture_hold`). Без `reason` → warn.
+- [ ] **STATIC_STRETCH [v1.5.1] (NO_GO):** ни один сегмент без смены scale не длится дольше `rhythm_table[pace].static_cap` (neutral: 5.0 s). При отсутствии безопасной точки склейки — **starvation-лесенка**:
+  - R1: reframe при $|yaw| \le 12°$ (без hard cut);
+  - R2: blink-margin ослаблен до $\pm 100$ мс;
+  - R3: cut при жесте в нижней зоне кадра;
+  - R4: микро-дрейф $+0.04$x (до 1.04x);
+  - R5: эскалация человеку.
+  Каждый шаг пишется в EDL как `reason: "starvation_relax_Rn"`. Если дошли до R4 — ставить `starvation_quality_warn` в critic_report.
 
 ### Гейты живого мобильного спикера (Live Mobile Speaker Gates)
 - [ ] **Eye-line gate:** границы hard cut строго при `at_camera`; склейка не попадает на момент отвода взгляда; крупный план (1.16x) назначен только на отрезок с `continuous_contact` $\ge 1.5$ сек.
@@ -574,6 +591,8 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 - [ ] **Gesture gate:** при наличии рук в верхней половине кадра план $\le 1.08x$; запрещен старт плана в момент входа кисти в зону лица.
 - [ ] **Blur gate:** на границе $\pm 3$ кадра резкость по Laplacian Variance выше пороговой (смазанные кадры смещают границу склейки).
 - [ ] **Vidstab check:** при наличии фонового дрейфа камеры (handheld) выполнен пре-пасс стабилизации до расчета кропов.
+- [ ] **Squint-gate (segment-wide) [v1.5.1]:** прикрытие/прищуривание глаз > 250 мс **внутри** сегмента плана 3 → даунгрейд сегмента до 1.08x (или split сегмента на sub-segments: pre-squint в план 3, squint-окно в 1.08x, post-squint обратно в план 3 если `continuous_contact` восстанавливается $\ge 1.5$ s). Причина в EDL: `reason: "squint_downgrade"`.
+- [ ] **Blink-boundary reinforcement [v1.5.1]:** blink-gate проверяет не только первый/последний кадр, но и окно $\pm 150$ мс от **каждой** границы сегмента. Полное закрытие глаз ($EAR < 0.20$) в этом окне → сдвиг стыка на ближайший кадр с открытыми глазами. Если сдвиг $> 300$ мс — warn `"blink_boundary_shift_large"`.
 
 ### Гейты синтетического аватара (AI-Avatar Gates)
 - [ ] **Cut-artifact alignment:** каждая склейка выставлена в окно $\pm 100$ мс от локального пика artifact-score.
@@ -803,6 +822,7 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
    - **Ритм:** фактические интервалы в диапазоне профиля, нет статики $> rhythm_table[pace].static_cap$;
    - **Аудио:** ebur128 → $I = -14 \pm 0.5$ LUFS, $TP \le -1$ dBTP; клики на стыках;
    - **FX профиля:** клиппинг $\le 2\%$; grain/drift только у AI;
+   - **RESIDUAL_DRIFT [v1.5.1]:** рассогласование фона (background-patch position) между **соседними** сегментами $\le 2$ px. Для handheld/in-car с vidstab — порог детекта понижается до $1$ px. Нарушение → NO_GO (handheld) / warn (tripod) с `fix_hint: "residual_drift_segment_boundary"`;
    - **Captions (при `export_only`):** SRT существует; таймкоды в out-мс; текст = asr_master; карточки 700–2200 мс; не ближе 120 мс к hard cut.
 
 3. **Выход:** `critic_report.json`:
@@ -851,6 +871,10 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 | FACE_RATIO_P95 | warn |
 | FACE_RATIO_P5 | warn (wide_source) / NO_GO (normal) [v1.5 hotfix] |
 | RHYTHM_OVERFLOW | warn [v1.5 hotfix] |
+| STATIC_STRETCH | NO_GO [v1.5.1] |
+| SQUINT_DOWNGRADE | warn [v1.5.1] |
+| BLINK_BOUNDARY | warn [v1.5.1] |
+| RESIDUAL_DRIFT | warn (tripod) / NO_GO (handheld) [v1.5.1] |
 | PACE_CHECK | warn; NO_GO only if mismatch ≥ 2 categories |
 | GRADE_UNIFORMITY | NO_GO [v1.6] |
 | NAMING | warn + autofix [v1.6] |
