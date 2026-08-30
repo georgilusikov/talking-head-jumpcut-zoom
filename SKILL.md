@@ -3,7 +3,7 @@ name: talking-head-jumpcut-zoom
 description: 'Автомонтаж вертикальных talking-head видео (9:16, Shorts, Reels, TikTok): startup intake → source normalization → адаптивные профили для живых мобильных спикеров (Live Mobile Speaker: eye-line драматургия, hard/reframe семантика, head-pose/gesture/blur гейты, segment-wide headroom, resolution-aware scale cap, micro-drift fallback) и синтетических аватаров (AI-Avatar: склейки по артефактам, region-crop псевдо B-roll, де-пластик фильтры); segments-first timeline.json, trust-but-verify QC (pre-render gates + post-render critic), SRT/word-JSON export для внешних субтитров, рендер через ffmpeg. Triggers: "смонтируй говорящую голову", "talking head zoom", "сделай зумы как в рилс", "подрежь паузы и расставь зумы", "автомонтаж shorts", "ai avatar", "heygen/synthesia монтаж", "смонтируй синтетического спикера", "монтаж живого спикера", "eye-line zoom", "динамичный спикер".'
 ---
 
-# Talking-Head Jumpcut & Zoom Editor v1.5.2
+# Talking-Head Jumpcut & Zoom Editor v1.6.1
 
 Единый профессиональный стандарт и модуль автомонтажа вертикальных экспертных роликов (9:16) в стиле динамичного удержания внимания (talking head retention edit). Модуль содержит **два специализированных профиля**:
 1. **Live Mobile Speaker** — для живых, динамичных спикеров с активной мимикой, жестикуляцией, наклонами головы и отводами взгляда.
@@ -74,8 +74,8 @@ graph TD
     P0["Project Intake → project_config.json"] --> A
     A[Raw 9:16, res auto] --> N["Source Normalization (rotation, VFR→CFR, HDR→Rec.709, yuv420p)"]
     N --> A0{source_type?}
-    A0 -->|live| B1[Whisper ASR + Eye-line / Pose / Gesture / Blur Gating]
-    A0 -->|ai_avatar| B2[TTS Phoneme Alignment + Artifact Scoring]
+    A0 -->|live| B1["thz-probes: Whisper ASR + Eye-line / Pose / Gesture / Blur Gating"]
+    A0 -->|ai_avatar| B2["thz-probes: TTS Phoneme Alignment + Artifact Scoring"]
     B1 --> M1["analysis.json (§9)"]
     B2 --> M1
     N --> B3{Дрейф фона / Handheld?}
@@ -85,7 +85,7 @@ graph TD
     B1 --> C{Речь плотная? < 400ms паузы}
     C -->|Да| D1[100% Audio Continuity + Eye-line / Zoom Scripting]
     C -->|Нет| D2[Silence Trimming >= 300ms + 25ms Micro-crossfades]
-    D1 --> E[4-Act Dramatic Scale Orchestration: ++--, Ladders, Resets]
+    D1 --> E["thz-orchestrator: 4-Act Scale Orchestration: ++--, Ladders, Resets"]
     D2 --> E
     B2 --> E
     E --> F["Pre-render Critic Gate (§5)"]
@@ -96,49 +96,33 @@ graph TD
     H0 -->|Нет| H2_check
     H1 --> H2_check{source_type == ai_avatar?}
     H2_check -->|Да| H2[Grain + Micro-drift Anti-plastic FX]
-    H2_check -->|Нет| H[FFmpeg FilterComplex Render + Ambience Layer]
+    H2_check -->|Нет| H["thz-render: FFmpeg FilterComplex Render + Ambience Layer"]
     H2 --> H
     H --> L["loudnorm -14 LUFS / TP -1"]
     L --> I[Master MP4 1080x1920]
-    I --> V1["Transcript Master + ASR Diff (§10)"]
-    I --> V2["Independent Critic (§11)"]
-    M1 --> V2
-    V1 --> V3["critic_report.json: GO / NO_GO"]
-    V2 --> V3
-    V3 -->|"NO_GO, ≤ 2 итераций"| G
+    I --> V1["thz-critic (изолированная сессия): Pass 1 Чистый замер без timeline"]
+    M1 --> V1
+    V1 --> V2{Все гейты PASS?}
+    V2 -->|Да| V3["critic_report.json (GO + CRITIC_PROVENANCE)"]
+    V2 -->|Нет| V4["Pass 2: чтение timeline.json для fix_hints"]
+    G -.->|только при NO_GO| V4
+    V4 --> V3
+    V3 -->|"NO_GO, ≤ 2 итераций"| E
     V3 -->|GO| DONE[Accepted Master]
 ```
 
-### Версионирование рендеров [v1.5]
+### Разделение исполнения на 4 изолированных контура [v1.6.1 Architecture]
 
-Рендер → `master.mp4` (итерации NO_GO: `master_iter1.mp4`, `master_iter2.mp4`).
-После GO: `master.mp4` переименовывается по `output.naming_pattern` (напр. `20260831_silencio_v01_1080x1920.mp4`); `ver` автоинкрементируется для каждого публичного артефакта.
-При `output.artifacts_retention == "minimal"`: после GO удаляются normalized/stabilized intermediate, контакт-листы, `master_iterN.mp4`; **всегда остаются**: `timeline.json`, `edit_plan.md`, `critic_report.json`, `analysis.json`, `transcript_side_by_side.txt`.
-
-- **Live Profile:** триггеры склеек и масштабов опираются на **Eye-line классификатор** (`at_camera` / `away`), естественные речевые паузы, фильтрацию смазанных кадров (`blur gate`) и углов наклона головы (`head-pose gate`).
-- **AI-Avatar Profile:** таймкоды извлекаются из **TTS phoneme alignment**, точки склеек выставляются на пики **Artifact scoring** (face-embedding $\Delta$, optical flow рук), применяется анти-пластик постобработка.
-
-### 4 артефакта пайплайна (Trust but Verify)
-
-```
-analysis.json  →  timeline.json + edit_plan.md  →  master.mp4  →  critic_report.json
- (восприятие)      (решения + человекочитаемый план)   (рендер)     (независимая верификация)
-```
-
-- **analysis.json** (§9) — машинный промежуточный документ: всё, что измерено до решений.
-- **edit_plan.md** (§13) — человекочитаемая нарратива + машиночитаемый Edit Decision Log для опционального аппрува.
-- **critic_report.json** (§11) — результат независимой верификации мастера: GO / NO_GO, замеры, fix_hints.
-
-Двухслойный QC: §5 дёшево ловит ошибки решений **до** рендера (pre-render), §§10–12 дорого но надёжно проверяет результат **после** рендера (post-render).
-
-### Разделение исполнения на 4 изолированных контура [v1.6 Architecture]
-
-Чтобы исключить execution gap (когда рендерер сам себя аттестует по манифесту), канон остаётся единым, а исполнение разделяется на 4 изолированных модуля:
+Чтобы исключить execution gap (когда рендерер/оркестратор сам себя аттестует по манифесту), канон остаётся единым, а исполнение разделяется на 4 изолированных модуля с жёстким ограничением provenance:
 
 1. **`thz-probes` (CV-анализ):** facemesh/EAR, gaze, pose, blur, background patches, source_captions, pace_features $\to$ `analysis.json`.
 2. **`thz-orchestrator` (Режиссура):** акты, паттерны, хук, калибровка лестницы, starvation-лесенка $\to$ `timeline.json + edit_plan.md`.
 3. **`thz-render` (Рендерер):** ffmpeg filtergraph, source normalization, grade, loudness, mux $\to$ `master.mp4`.
-4. **`thz-critic` (Изолированный критик):** отдельная сессия/скрипт; на вход подаются **исключительно** `master.mp4 + analysis.json + asr_reference`. Манифест `timeline.json` используется только для формирования подсказок `fix_hints` при NO_GO, но **никогда для вынесения pass/fail**. Версия скрипта критика пиннуется в `critic_report.json#critic_version`.
+4. **`thz-critic` (Изолированный критик):** отдельная сессия/скрипт; на вход подаются **исключительно** `master.mp4 + analysis.json + asr_reference`. Манифест `timeline.json` используется **только во 2-м проходе** после обнаружения дефектов для выработки `fix_hints`.
+
+> [!CAUTION]
+> **[v1.6.1] PROCESS_INTEGRITY Guard:**
+> Узел `critic_report.json` производится **исключительно** скриптом `thz-critic`. Запись или генерация отчёта оркестратором/рендерером является нарушением `PROCESS_INTEGRITY` и влечёт немедленный процессный **NO_GO** с эскалацией человеку. Пайплайн не публикует мастер без валидного отчёта с подтверждённым `master_sha256` и `script_sha256`.
 
 ### Source Normalization (обязательный пре-пасс)
 
@@ -328,7 +312,7 @@ $$X_{crop} = \text{trunc}\left(\frac{W_{in} - W_{crop}}{2} + X_{shift}\right), \
 ### Драматургия взгляда (Eye-line Dramaturgy)
 1. **Границы hard cut:** точки разреза ставятся **строго при `at_camera`**. Отвод взгляда не должен оказываться на стыке планов.
 2. **Отвод взгляда = «Выдох»:** reframe-down до **1.00x** если отвод $\ge 1.0$s (фаза сброса или `--`).
-33. **Возврат взгляда + Тезис = Шаг «+»:** момент возврата взгляда в камеру, совпавший с ключевым словом, является идеальной естественной точкой reframe на **1.08x** или **1.16x**.
+3. **Возврат взгляда + Тезис = Шаг «+»:** момент возврата взгляда в камеру, совпавший с ключевым словом, является идеальной естественной точкой reframe на **1.08x** или **1.16x**.
 4. **План 3 (1.16x) — только на устойчивом контакте:** вход в крупный план разрешен исключительно при `continuous_contact` длительностью $\ge 1.5$ сек. Крупный план на «блуждающих» глазах запрещен.
 
 ### Приоритет точек склеек (для hard cut)
@@ -604,10 +588,10 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 - [ ] **Vidstab check:** при наличии фонового дрейфа камеры (handheld) выполнен пре-пасс стабилизации до расчета кропов.
 - [ ] **Squint-gate (segment-wide) [v1.5.1]:** прикрытие/прищуривание глаз > 250 мс **внутри** сегмента плана 3 → даунгрейд сегмента до 1.08x (или split сегмента на sub-segments: pre-squint в план 3, squint-окно в 1.08x, post-squint обратно в план 3 если `continuous_contact` восстанавливается $\ge 1.5$ s). Причина в EDL: `reason: "squint_downgrade"`.
 - [ ] **Blink-boundary reinforcement [v1.5.1]:** blink-gate проверяет не только первый/последний кадр, но и окно $\pm 150$ мс от **каждой** границы сегмента. Полное закрытие глаз ($EAR < 0.20$) в этом окне → сдвиг стыка на ближайший кадр с открытыми глазами. Если сдвиг $> 300$ мс — warn `"blink_boundary_shift_large"`.
-- [ ] **Poster-Frame Gate [v1.5.2] (HF-8):** первый кадр мастера ($t=0.0$ s) проверяется на:
+- [ ] **Poster-Frame Gate [v1.5.2, v1.6.1] (HF-8):** первый кадр мастера ($t=0.0$ s) проверяется на:
   - открытые глаза ($EAR \ge 0.20$);
   - отсутствие размытой кисти руки в зоне лица ($motion\_blur$);
-  - рот не находится в экстремальном полуоткрытом висеме ($viseme\_mid$).
+  - рот не находится в экстремальном висеме: Mouth Aspect Ratio $MAR = h_{mouth}/w_{mouth}$ в пределах нормы старта слова ($MAR \le 0.45$ по `baselines/viseme_calib.json`); естественная энергия старта слова принимается, экстремальное застывание $>0.55 \to$ warn.
   При нарушении $\to$ сдвиг точки старта $\le 0.5$ s на чистый кадр либо даунгрейд хука до 1.00x.
 
 ### Гейты синтетического аватара (AI-Avatar Gates)
@@ -821,53 +805,54 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 
 ## 11. Независимый критик (Post-render: просмотр и замеры)
 
-**Контракт независимости:** критик получает `master.mp4`, `analysis.json` и `asr_reference`. `timeline.json` — только для сверки «что хотели» vs «что получилось», не как источник истины.
+**Контракт независимости:** критик — изолированный модуль (`thz-critic`), запускаемый в отдельной сессии. На вход подаются **только**: `master.mp4`, `analysis.json` и `asr_reference`. Манифест `timeline.json` на этапе первого прохода **не передаётся** (защита от anchoring-bias).
 
-### Протокол просмотра
+### Протокол Two-Pass Critic и CRITIC_PROVENANCE [v1.6.1]
 
-1. **Контакт-лист:** сетка 4×4 из первых/последних кадров каждого сегмента + кадры границ → визуальный проход (LLM-vision или человек):
-   - headroom (воздух над волосами);
-   - открытые глаза на границах;
-   - резкость кадра;
-   - eye-line на границах (`at_camera` для live);
-   - целостность жеста/реквизита.
+1. **Pass 1 (Чистый инструментальный замер):**
+   - Все 32 проверки замеряются компьютерным зрением и аудио-анализом непосредственно по `master.mp4`.
+   - Каждое поле `measured` в отчёте обязано содержать: **`значение + метод измерения`** (напр. `"1.88s >= 1.80s (method: optical_flow_bg_patch_tracking)"`).
+   - Если все проверки `pass` или `warn` $\to$ вердикт `GO`.
 
-2. **Замеры по мастеру:**
-   - **Геометрия:** ffprobe (1080×1920, SAR 1:1, четность); `hair_top_out` $\ge 5\%$ на выборке 5 fps внутри сегментов; `face_cx` $\le \pm 4\%$;
-   - **Факт зумов (по статичному фону):** template-matching фоновых патчей из `analysis.json.background_patches` (кромки листьев, стена, интерьер); scale = отношение размеров matched-патчей ($\pm 1.5\%$) + времена переключений $\pm 2$ кадра. `face_h` — вспомогательная метрика: расхождение face_h и background-scale $> 3\%$ трактуется как «субъект двинулся к камере», а не ошибка рендера;
-   - **Ритм:** фактические интервалы в диапазоне профиля, нет статики $> rhythm_table[pace].static_cap$;
-   - **Аудио:** ebur128 → $I = -14 \pm 0.5$ LUFS, $TP \le -1$ dBTP; клики на стыках;
-   - **FX профиля:** клиппинг $\le 2\%$; grain/drift только у AI;
-   - **RESIDUAL_DRIFT [v1.5.1]:** рассогласование фона (background-patch position) между **соседними** сегментами $\le 2$ px. Для handheld/in-car с vidstab — порог детекта понижается до $1$ px. Нарушение → NO_GO (handheld) / warn (tripod) с `fix_hint: "residual_drift_segment_boundary"`;
-   - **Captions (при `export_only`):** SRT существует; таймкоды в out-мс; текст = asr_master; карточки 700–2200 мс; не ближе 120 мс к hard cut.
+2. **Pass 2 (Выработка fix_hints только при NO_GO):**
+   - Только если в Pass 1 обнаружен хотя бы один `fail` (NO_GO), критик загружает `timeline.json` для локализации сегментов и выработки точных `fix_hints`.
+   - В отчёте выставляется `provenance: "second_pass_with_timeline"`.
 
-3. **Выход:** `critic_report.json`:
+3. **Обязательные поля `CRITIC_PROVENANCE` в `critic_report.json`:**
 
 ```json
 {
-  "verdict": "NO_GO",
+  "critic_version": "v1.6.1-instrumental",
+  "run_id": "run_20260831_1080x1920_v06",
+  "timestamp": "2026-08-30T21:40:00Z",
+  "script_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "master_sha256": "4a7d189b2c3f...",
+  "inputs_sha256": {
+    "master_mp4": "4a7d189b2c3f...",
+    "analysis_json": "9f82d1c0aa...",
+    "asr_reference": "0b12fe98cc..."
+  },
+  "verdict": "GO",
   "iteration": 1,
   "checks": [
-    { "id": "ASR_DIFF", "status": "pass", "measured": "0 deletions" },
-    { "id": "HEADROOM", "status": "fail", "segment_ms": [3900, 7200], "measured_px": 88, "required_px": 96 },
-    { "id": "CONTAINER", "status": "pass", "measured": "1080x1920 SAR=1:1 yuv420p Rec.709" },
-    { "id": "ZOOM_RATIO", "status": "pass", "measured": "1.08x ±0.8% (bg-match)" },
-    { "id": "RHYTHM", "status": "pass", "measured": "2.3-4.1s range" },
-    { "id": "LOUDNESS", "status": "pass", "measured": "-14.1 LUFS, TP=-1.8 dBTP" },
-    { "id": "FX", "status": "pass", "measured": "clipping 0.3%" },
-    { "id": "CAPTIONS_SRT", "status": "pass", "measured": "42 cards, timing OK" },
-    { "id": "SYNC", "status": "pass", "measured": "drift <1 frame" },
-    { "id": "COLORSPACE", "status": "pass", "measured": "Rec.709, no HDR metadata" },
-    { "id": "PLAN3_SHARE", "status": "pass", "measured": "0.18 ≤ 0.25 cap" },
-    { "id": "FACE_RATIO_P95", "status": "pass", "measured": "p95=0.41 ≤ 0.44" },
-    { "id": "PACE_CHECK", "status": "pass", "measured": "declared=neutral, measured_wpm=178, category=neutral" }
+    { "id": "ASR_DIFF", "status": "pass", "measured": "0 word deletions (method: whisper_large_v3_turbo_wer)" },
+    { "id": "HEADROOM", "status": "pass", "measured": "min hair_top = 6.2% >= 5.0% (method: facemesh_sample_5fps)" },
+    { "id": "ANTI_FLICKER_ACTUAL", "status": "pass", "measured": "min event delta = 1.88s >= 1.80s (method: bg_patch_switch_timestamps)" }
   ],
-  "fix_hints": [
-    "сегмент 3900-7200: anchor_y += дельта / взять min hair_top"
-  ],
+  "fix_hints": [],
   "transcript_side_by_side": "transcript_side_by_side.txt"
 }
 ```
+
+> [!IMPORTANT]
+> **[v1.6.1] REPORT_COMPLETENESS Rule:**
+> Все 32 канонических Check ID из таблицы Severity Map **обязаны присутствовать** в `checks[]` со статусом `pass|warn|fail|skip`. Отсутствие любого Check ID делает отчёт невалидным (`REPORT_COMPLETENESS: fail`).
+>
+> **[v1.6.1] PROCESS_INTEGRITY Rule:**
+> Отчёт признаётся валидным только если:
+> 1. Создан процессом `thz_critic.py` (подтверждается `script_sha256`);
+> 2. `master_sha256` совпадает с фактическим хэшем проверяемого видеофайла;
+> 3. `inputs_sha256` зафиксированы на момент старта проверки.
 
 ### Severity Map [v1.5, v1.6]
 
@@ -929,7 +914,11 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 
 **D. Границы** — глаза открыты в первом/последнем кадре каждого сегмента; $\ge 150$ мс от моргания; резкие кадры (blur gate); hard cut на `at_camera` (live) / на пике артефактов (AI); реквизит не исчезает в том же плане.
 
-**E. Ритм** — фактические переключения = timeline $\pm 2$ кадра; интервалы в диапазоне профиля (hard: $rhythm\_table[pace].hard$; reframe $\ge rhythm\_table[pace].reframe\_min$; anti-flicker $\ge rhythm\_table[pace].anti\_flicker$); нет статики $> rhythm\_table[pace].static\_cap$ и мельтешения $< 1.8$s; no-op отсутствуют; snap\_back только при `loop_state_match`.
+**E. Ритм по типам переходов [v1.6.1]** — фактические переключения = timeline $\pm 2$ кадра:
+- **Hard-to-Hard каденс:** интервал между последовательными hard cuts $\in rhythm\_table[pace].hard$ (neutral: 2.2–4.5 s);
+- **Любые визуальные события:** интервал между любыми сменяющимися событиями (hard или reframe) $\ge rhythm\_table[pace].anti\_flicker$ (neutral: $\ge 1.8$ s);
+- **Reframe min:** интервал от любого события до рефрейма $\ge rhythm\_table[pace].reframe\_min$ (neutral: $\ge 1.8$ s);
+- **Статика:** отсутствие непрерывных планов без смены масштаба $> rhythm\_table[pace].static\_cap$; no-op запрещены; snap\_back только при `loop_state_match`.
 
 **F. Аудио** — $-14 \pm 0.5$ LUFS, $TP \le -1$ dBTP; 25 мс фейды на стыках; интершум по профилю.
 
@@ -939,7 +928,11 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 
 **I. Captions export** — SRT существует; целостен с `asr_master`; таймкоды out-мс; карточки 700–2200 мс; $\ge 120$ мс от hard cut. При subtitles.mode=off проверки CAPTIONS пропускаются; word-level ASR остаётся внутри пайплайна.
 
-**J. Вердикт критика** — `critic_report.verdict == "GO"`.
+**J. Вердикт критика и Provenance [v1.6.1]** —
+- `critic_report.verdict == "GO"`;
+- `REPORT_COMPLETENESS == pass` (все 32 Check ID присутствуют);
+- `PROCESS_INTEGRITY == pass` (`master_sha256` и `script_sha256` подтверждены процессом `thz_critic.py`);
+- Статус базлайна ветки: **provisional** до воспроизведения GO изолированным критиком на том же sha256.
 
 > [!CAUTION]
 > Если после 2 итераций NO_GO остаётся — эскалация человеку с `critic_report.json` и `transcript_side_by_side.txt`. Автоматический цикл прекращается.
