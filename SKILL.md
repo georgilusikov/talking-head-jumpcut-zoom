@@ -91,8 +91,7 @@ graph TD
     I --> V1["Transcript Master + ASR Diff (§10)"]
     I --> V2["Independent Critic (§11)"]
     M1 --> V2
-    V3["critic_report.json: GO / NO_GO"]
-    V1 --> V3
+    V1 --> V3["critic_report.json: GO / NO_GO"]
     V2 --> V3
     V3 -->|"NO_GO, ≤ 2 итераций"| G
     V3 -->|GO| DONE[Accepted Master]
@@ -130,6 +129,9 @@ analysis.json  →  timeline.json + edit_plan.md  →  master.mp4  →  critic_r
 
 JSON-блок в timeline: `source_normalization: { rotation_applied, vfr_to_cfr, target_fps, colorspace: "rec709", hdr_tonemap: "auto_if_needed" }`.
 
+> [!NOTE]
+> **[v1.6] TR-17.** Music-bed detection: детект гармонической подложки в raw → `audio.ambience.enabled=false` (не удваивать кровать), факт в log (`audio.music_bed: "source"`). Loudnorm без изменений.
+
 ---
 
 ## 2. 3-Ступенчатая система планов и геометрия кропа
@@ -157,7 +159,6 @@ $$scale = \min(\text{scale\_target}, scale\_cap, scale\_for\_face\_target)$$
 
 Вместо фиксированной лестницы — предиктивный подбор на основе `face_base` (медиана `face_h / H_out` при scale 1.00 на normalized intermediate):
 
-```
 face_base = median(face_h / H_out) при scale 1.00
 lower     = min(1.10, 0.44 / face_base)
 top_ideal = clamp(0.40 / face_base, lower, scale_cap)
@@ -166,7 +167,6 @@ step2     = ladder_step2[intensity] если top == ladder_top,
             иначе round(1 + (top − 1) · 0.55, 0.02)
 ladder_final = [1.00, min(step2, top), top]
 scale = min(scale_target, scale_cap, scale_for_face_target)  # формула v1.4 сохраняется
-```
 
 Базовые лестницы по intensity:
 | intensity | ladder | top |
@@ -297,6 +297,9 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
    - Старт с region-crop кропом реквизита (0.6–1.0s) из широкого кадра с последующим переходом в 1.00x (при $W_{bbox} \ge 0.70 \cdot W_{out}$).
 6. **Artifact-mask cut (Jump-cut маскировка для AI):**
    - Принудительная склейка со сменой масштаба точно в локальный максимум artifact-score с принудительным каденсом 2.0–4.0s.
+
+> [!NOTE]
+> **[v1.6] TR-12.** Расширенная библиотека паттернов: `Punch`, `Wave`, `Sawtooth (++-+--)`, `Plateau (+ = + − −)`, `LadderDown`; правило «после ++ минимум один −»; feasibility по gaze/gesture-гейтам; calm preferred = [Punch, Wave]. Паттерн акта — в EDL.
 
 ### Hook-selector акта 1 [v1.5]
 
@@ -514,6 +517,10 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 - [ ] **Accessory & Hand integrity:** дефекты морфинга пальцев и аксессуаров изолированы планом $\le 1.00x$, подрезкой или отправлены на регенерацию ($>1.5s$).
 - [ ] **De-plastic FX check:** наложено зерно $\approx 0.05$, микро-дрифт 1.00→1.02.
 
+> [!NOTE]
+> **[v1.6] TR-16.** Prop lifecycle gate: hard cut запрещён внутри `transition_windows` (lift/set-down ±250 ms) из `prop_intervals`; сдвиг на ближайшую безопасную точку.
+> **[v1.6] TR-18.** Eye-closure gate: прикрытия глаз >250 ms — границы сегментов вне окон (±dur/2+100 мс); >2 прикрытий на 2 s → план ≤ 1.08 («сонное окно»).
+
 ### Conflict Resolution Policy (иерархия при конфликте гейтов)
 
 Когда несколько гейтов конфликтуют, применяется строгий приоритет:
@@ -542,6 +549,9 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
    Если камера не зафиксирована на штативе (дрейф оператора), зумирование многократно усиливает тряску. Включается пре-пасс `vidstabdetect` / `vidstabtransform` до применения матрицы зумов.
 6. **Micro-drift (fallback only):**
    Разрешён **только** как fallback при невозможности безопасного hard cut при интервале $> 5$s (§5, Conflict Resolution п.6). Диапазон: 1.00→1.03. Не является постоянным визуальным эффектом.
+
+> [!NOTE]
+> **[v1.6] TR-13.** Плановый «дыхательный» дрейф: при `pace==calm` ИЛИ доле `at_camera` > 80% разрешён monotonic-in 1.00→1.02 в сегментах >4 s (`drift_mode: "planned"`); скорость ≤ 0.5%/s; headroom-margin считается на scale конца дрейфа; допуск критика ZOOM_RATIO = ±(drift+1.5%).
 
 ---
 
@@ -578,6 +588,8 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 | **Pace / Ритм [v1.5]** | `rhythm_table[pace]` (§3); единый источник каденсов | `rhythm_table[pace]` с принудительным каденсом 2.0–4.0 |
 | **Hook акта 1 [v1.5]** | `prop_insert` / `cold_open` / `intimacy_start` (§3) | — |
 | **Semantic keywords [v1.5]** | `semantic.keywords` → `cut_candidates` (§3) | — |
+| **Grade look [v1.6]** | `grade.look` после crop/scale, единообразно по сегментам; highlight recovery глобально при клиппинге >2% | Аналогично |
+| **Плановый дрейф [v1.6]** | monotonic-in 1.00→1.02 в сегментах >4 s при pace=calm или at_camera >80% | Без изменений (обязательный 1.00→1.02 уже в v1.4) |
 
 ---
 
@@ -671,7 +683,8 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
   ],
   "prop_intervals": [
     { "start_ms": 0, "end_ms": 4500, "label": "sneaker", "transition_windows": { "lift": [0, 250], "set_down": [4250, 4750] } }
-  ]
+  ],
+  "eye_closures": []
 }
 ```
 
@@ -681,6 +694,8 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 > - `background_patches` — статичные фоновые участки для верификации зумов критиком (§11).
 > - `source_captions_bbox` — bbox распознанных вжжённых субтитров (null, если не найдены).
 > - `keyword_hits` — совпадения по семантическим ключам (semantic.keywords) для повышения приоритета склейки.
+> - `prop_intervals` **[v1.6 TR-16]** — жизненный цикл реквизита с transition-окнами (lift/set-down); hard cut запрещён внутри окна.
+> - `eye_closures` **[v1.6 TR-18]** — прикрытия глаз >250 ms; >2 на 2 s → план ≤ 1.08.
 
 ---
 
@@ -774,6 +789,10 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 | GRADE_UNIFORMITY | NO_GO [v1.6] |
 | NAMING | warn + autofix [v1.6] |
 | RETENTION | warn + autofix [v1.6] |
+
+> [!NOTE]
+> **[v1.6] TR-15.** `GRADE_UNIFORMITY` (Δluma/Δchroma фоновых патчей между сегментами ≤2% → NO_GO); `NAMING` и `RETENTION` (warn + автофикс, post-GO housekeeping).
+> **[v1.6] TR-19.** Retention proxy score: `retention_score = 0.25·hook + 0.30·event_density(rhythm_table) + 0.20·semantic_alignment + 0.15·plan3_distribution + 0.10·loop`. Informational; гейтом становится в v2 после калибровки.
 
 4. **Цикл исправлений:** NO_GO → авто-фикс timeline по `fix_hints` → повторный рендер → повторный критик; **максимум 2 итерации**, далее эскалация человеку.
 
