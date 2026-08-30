@@ -3,7 +3,7 @@ name: talking-head-jumpcut-zoom
 description: 'Автомонтаж вертикальных talking-head видео (9:16, Shorts, Reels, TikTok): startup intake → source normalization → адаптивные профили для живых мобильных спикеров (Live Mobile Speaker: eye-line драматургия, hard/reframe семантика, head-pose/gesture/blur гейты, segment-wide headroom, resolution-aware scale cap, micro-drift fallback) и синтетических аватаров (AI-Avatar: склейки по артефактам, region-crop псевдо B-roll, де-пластик фильтры); segments-first timeline.json, trust-but-verify QC (pre-render gates + post-render critic), SRT/word-JSON export для внешних субтитров, рендер через ffmpeg. Triggers: "смонтируй говорящую голову", "talking head zoom", "сделай зумы как в рилс", "подрежь паузы и расставь зумы", "автомонтаж shorts", "ai avatar", "heygen/synthesia монтаж", "смонтируй синтетического спикера", "монтаж живого спикера", "eye-line zoom", "динамичный спикер".'
 ---
 
-# Talking-Head Jumpcut & Zoom Editor v1.5.1
+# Talking-Head Jumpcut & Zoom Editor v1.5.2
 
 Единый профессиональный стандарт и модуль автомонтажа вертикальных экспертных роликов (9:16) в стиле динамичного удержания внимания (talking head retention edit). Модуль содержит **два специализированных профиля**:
 1. **Live Mobile Speaker** — для живых, динамичных спикеров с активной мимикой, жестикуляцией, наклонами головы и отводами взгляда.
@@ -177,7 +177,6 @@ $$scale = \min(\text{scale\_target}, scale\_cap, scale\_for\_face\_target)$$
 
 Вместо фиксированной лестницы — предиктивный подбор на основе `face_base` (медиана `face_h / H_out` при scale 1.00 на normalized intermediate):
 
-```
 face_base = median(face_h / H_out) при scale 1.00
 lower     = min(1.10, 0.44 / face_base)
 top_ideal = clamp(0.40 / face_base, lower, scale_cap)
@@ -186,7 +185,6 @@ step2     = ladder_step2[intensity] если top == ladder_top,
             иначе round(1 + (top − 1) · 0.55, 0.02)
 ladder_final = [1.00, min(step2, top), top]
 scale = min(scale_target, scale_cap, scale_for_face_target)  # формула v1.4 сохраняется
-```
 
 Базовые лестницы по intensity:
 | intensity | ladder | top |
@@ -368,12 +366,16 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 - План 3 распределяется по $\ge 2$ актам из 4-х — запрещена концентрация всех кульминаций в одном акте.
 - Оркестратор timeline-генератора проверяет баланс после построения и перераспределяет при нарушении.
 
-### Hook-selector акта 1 [v1.5]
+### Hook-selector акта 1 [v1.5, v1.5.2]
 
 Три опции старта, выбор фиксируется в `analysis.json#hook`:
 - `prop_insert` — есть prop/insert-кандидат при $W_{bbox} \ge 0.70 \cdot W_{out}$;
-- `cold_open` — панчлайн в 1.08–1.16 на ~1 s, затем сброс;
-- `intimacy_start` — 1.08 при `continuous_contact \ge 2 s` на старте.
+- `cold_open` — панчлайн в 1.08–1.16 на $\le 1.2$ s и только на keyword-панчлайне, scale $\le ladder\_top$, затем сброс;
+- `intimacy_start` — **строго $\min(1.08, ladder\_step2)$** при `continuous_contact \ge 2 s` на старте.
+
+> [!IMPORTANT]
+> **[v1.5.2] Hook Scale Cap (HF-7):**
+> Хук **никогда не использует wide_source-boosted top scale**! Буст лестницы (напр. 1.60x в 4K) работает исключительно для Плана 3 в теле ролика для кульминаций. Хуки рассчитываются в абсолютных масштабах (1.00x или 1.08x), чтобы сохранить пространство для нарастания драматургии («++--») и исключить ложное ощущение «сразу в лицо».
 
 Дефолт по пресету профиля (Приложение B); нет условий → стандартный 1.00. Поле `hook_type` в EDL и сегменте.
 
@@ -592,13 +594,16 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 - [ ] **Blur gate:** на границе $\pm 3$ кадра резкость по Laplacian Variance выше пороговой (смазанные кадры смещают границу склейки).
 - [ ] **Vidstab check:** при наличии фонового дрейфа камеры (handheld) выполнен пре-пасс стабилизации до расчета кропов.
 - [ ] **Squint-gate (segment-wide) [v1.5.1]:** прикрытие/прищуривание глаз > 250 мс **внутри** сегмента плана 3 → даунгрейд сегмента до 1.08x (или split сегмента на sub-segments: pre-squint в план 3, squint-окно в 1.08x, post-squint обратно в план 3 если `continuous_contact` восстанавливается $\ge 1.5$ s). Причина в EDL: `reason: "squint_downgrade"`.
-- [ ] **Blink-boundary reinforcement [v1.5.1]:** blink-gate проверяет не только первый/последний кадр, но и окно $\pm 150$ мс от **каждой** границы сегмента. Полное закрытие глаз ($EAR < 0.20$) в этом окне → сдвиг стыка на ближайший кадр с открытыми глазами. Если сдвиг $> 300$ мс невозможен → downgrade transition до `reframe` или fallback на план 1.00x. Причина в EDL: `reason: "blink_boundary_shift"`.
-- [ ] **Micro-drift live fallback:** micro-drift (1.00→1.03) используется **исключительно** как fallback при невозможности безопасного hard cut при интервале $> 5$s. Запрещён как штатный эффект для live profile.
+- [ ] **Blink-boundary reinforcement [v1.5.1]:** blink-gate проверяет не только первый/последний кадр, но и окно $\pm 150$ мс от **каждой** границы сегмента. Полное закрытие глаз ($EAR < 0.20$) в этом окне → сдвиг стыка на ближайший кадр с открытыми глазами. Если сдвиг $> 300$ мс — warn `"blink_boundary_shift_large"`.
+- [ ] **Poster-Frame Gate [v1.5.2] (HF-8):** первый кадр мастера ($t=0.0$ s) проверяется на:
+  - открытые глаза ($EAR \ge 0.20$);
+  - отсутствие размытой кисти руки в зоне лица ($motion\_blur$);
+  - рот не находится в экстремальном полуоткрытом висеме ($viseme\_mid$).
+  При нарушении $\to$ сдвиг точки старта $\le 0.5$ s на чистый кадр либо даунгрейд хука до 1.00x.
 
 ### Гейты синтетического аватара (AI-Avatar Gates)
-- [ ] **Artifact-mask gate:** стыки планов привязаны к пикам метрики артефактов (локальные максимумы face-embedding $\Delta$, optical flow рук).
-- [ ] **Регенерация длинных дефектов:** артефакты $> 1.5$ сек изолированы для повторной генерации.
-- [ ] **Принудительный каденс 2.0–4.0 сек** (защита от зависаний без маскировки артефактов).
+- [ ] **Cut-artifact alignment:** каждая склейка выставлена в окно $\pm 100$ мс от локального пика artifact-score.
+- [ ] **Forced cadence check:** принудительный каденс склеек строго **2.0–4.0 сек** (защита от зависаний без маскировки артефактов).
 - [ ] **Accessory & Hand integrity:** дефекты морфинга пальцев и аксессуаров изолированы планом $\le 1.00x$, подрезкой или отправлены на регенерацию ($>1.5s$).
 - [ ] **De-plastic FX check:** наложено зерно $\approx 0.05$, микро-дрифт 1.00→1.02.
 
@@ -876,6 +881,7 @@ $$\text{Возврат взгляда (Eye-line)} > \text{Keyword [v1.5]} > \tex
 | STATIC_STRETCH | NO_GO [v1.5.1] |
 | SQUINT_DOWNGRADE | warn [v1.5.1] |
 | BLINK_BOUNDARY | warn [v1.5.1] |
+| POSTER_FRAME | warn + autofix [v1.5.2] |
 | RESIDUAL_DRIFT | warn (tripod) / NO_GO (handheld) [v1.5.1] |
 | PACE_CHECK | warn; NO_GO only if mismatch ≥ 2 categories |
 | GRADE_UNIFORMITY | NO_GO [v1.6] |
